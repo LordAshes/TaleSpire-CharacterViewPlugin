@@ -3,12 +3,21 @@ using UnityEngine.Rendering.PostProcessing;
 using BepInEx;
 using Bounce.Unmanaged;
 using System.Linq;
+using BepInEx.Configuration;
 
-namespace CharacterView
+namespace LordAshes
 {
-    [BepInPlugin("org.d20armyknife.plugins.characterView", "Character View Plug-In", "1.1.0.0")]
+    [BepInPlugin(Guid, "Character View Plug-In", Version)]
+    [BepInDependency(RadialUI.RadialUIPlugin.Guid)]
     public class CharacterViewPlugin : BaseUnityPlugin
     {
+        // Plugin info
+        private const string Guid = "org.lordashes.plugins.characterview";
+        private const string Version = "1.2.0.0";
+
+        // Content directory
+        private string dir = UnityEngine.Application.dataPath.Substring(0, UnityEngine.Application.dataPath.LastIndexOf("/")) + "/TaleSpire_CustomData/";
+
         // Stores if the current view is in Character View mode or Regular View mode
         private bool characterView = false;
 
@@ -34,6 +43,12 @@ namespace CharacterView
         // Higher values are a more realistic depiction of what the character sees but will not show content near the floor that is immeidately infront of the mini.
         private const float cameraHeightOffset = 0.5f;
 
+        // Creature whose radial menu is open
+        private CreatureGuid radialCreature = CreatureGuid.Empty;
+
+        // Configuration
+        private ConfigEntry<bool> usePostProcessing { get; set; }
+        
         /// <summary>
         /// Function for initializing plugin
         /// This function is called once by TaleSpire
@@ -41,6 +56,40 @@ namespace CharacterView
         void Awake()
         {
             UnityEngine.Debug.Log("CharacterViewPlugin: Select character and press ? to toggle between Character View and Regular View modes.");
+
+            // Post plugin on TaleSpire main page
+            StateDetection.Initialize(this.GetType());
+
+            // Load configuration
+            usePostProcessing = Config.Bind("Settings", "Use Post Processing When In CharacterView", true);
+
+            // Add Character View to mini Radial menu
+            Texture2D tex = new Texture2D(32, 32);
+            tex.LoadImage(System.IO.File.ReadAllBytes(dir + "Images/Icons/CharacterView.Png"));
+            Sprite icon = Sprite.Create(tex, new Rect(0, 0, 32, 32), new Vector2(0.5f, 0.5f));
+            RadialUI.RadialUIPlugin.AddOnCharacter(CharacterViewPlugin.Guid, new MapMenu.ItemArgs
+            {
+                Action = (mmi, obj) =>
+                {
+                    ToggleView(radialCreature); 
+                },
+                Icon = icon,
+                Title = "Character View",
+                CloseMenuOnActivate = true
+            }, Reporter);
+
+        }
+
+        /// <summary>
+        /// Method to track which asset has the radial menu open
+        /// </summary>
+        /// <param name="selected"></param>
+        /// <param name="radialMenu"></param>
+        /// <returns></returns>
+        private bool Reporter(NGuid selected, NGuid radialMenu)
+        {
+            radialCreature = new CreatureGuid(radialMenu);
+            return true;
         }
 
         /// <summary>
@@ -50,7 +99,7 @@ namespace CharacterView
         void Update()
         {
             // Character View fucntionality is triggered by the ? or / key
-            if (Input.GetKeyDown(KeyCode.Question)|| Input.GetKeyDown(KeyCode.Slash))
+            if (Input.GetKeyDown(KeyCode.Question) || Input.GetKeyDown(KeyCode.Slash) || (Input.anyKeyDown && characterView))
             {
                 // Ensure that there is a camera controller instance
                 if (CameraController.HasInstance)
@@ -64,85 +113,89 @@ namespace CharacterView
                             // Ensure that the board is not loading
                             if (!BoardSessionManager.IsLoading)
                             {
-                                // Get reference to the camera
-                                Camera camera = CameraController.GetCamera();
-
-                                // If Character View mode is not active then activate it
-                                if (!characterView)
-                                {
-                                    // Switch the mode indicator (Character View mode)
-                                    characterView = true;
-
-                                    // Get post processing status
-                                    usePP = GetPostProcessing();
-                                    // Turn off post processing
-                                    SetPostProcessing(false);
-                                    // Save camera position and rotation before character view
-                                    defaultCameraPos = camera.transform.position;
-                                    defaultCameraRot = camera.gameObject.transform.eulerAngles;
-
-                                    if (diagnostic) { UnityEngine.Debug.Log("Saving Camera: " + defaultCameraPos.x + "," + defaultCameraPos.y + "," + defaultCameraPos.z + " facing " + defaultCameraRot.y); }
-
-                                    // Find the selected character
-                                    CreatureBoardAsset[] assets = CreaturePresenter.AllCreatureAssets.ToArray();
-                                    foreach (CreatureBoardAsset asset in assets)
-                                    {
-                                        if ((NGuid)LocalClient.SelectedCreatureId.Value == (NGuid)asset.Creature.CreatureId.Value)
-                                        {
-                                            SystemMessage.DisplayInfoText("Viewing As "+asset.Creature.Name+"...");
-
-                                            // Get the selected character's current position and rotation
-
-                                            Vector3 pos = // asset.CorrectPos;                          // <- Doesn't update on move (Load position?)
-                                                          // asset.PlacedPosition;                      // <- Updated when mini is not held
-                                                          // asset.LastDropPosition;                    // <- Updated when mini is not held
-                                                          // asset.Creature.LastPlacedPosition;         // <- Updated when mini is not held
-                                                             asset.gameObject.transform.position;       // or asset.Creature.gameObject.transform.position;
-
-                                            Vector3 rot = asset.Rotator.eulerAngles;
-
-                                            if (diagnostic) { UnityEngine.Debug.Log(asset.Creature.Name + " is at " + pos.x + "," + pos.y + "," + pos.z + " facing " + rot.y); }
-
-                                            // Locate spot just in front of mini to avoid seeing through mini
-                                            Quaternion rotation = Quaternion.AngleAxis((rot.y-90), Vector3.up);
-                                            Vector3 magnitude = new Vector3(0, 0, cameraForwardOffset);
-                                            Vector3 dir = rotation * magnitude;
-
-                                            if (diagnostic) { UnityEngine.Debug.Log("Camera offset is " + dir.x + "," + dir.y + "," + dir.z); }
-
-                                            // Apply the mini offset to the mini position to determine the camera position
-                                            pos.x += dir.x;
-                                            pos.y += cameraHeightOffset;
-                                            pos.x += dir.y;
-
-                                            // Apply camera position and rotation
-                                            camera.gameObject.transform.position = pos;
-                                            camera.gameObject.transform.eulerAngles = new Vector3(0,(rot.y-90), 0);
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    // Switch the mode indicator (Regular View mode)
-                                    characterView = false;
-
-                                    if (diagnostic) { UnityEngine.Debug.Log("Restoring Camera: " + defaultCameraPos.x + "," + defaultCameraPos.y + "," + defaultCameraPos.z + " facing " + defaultCameraRot.y); }
-
-                                    // Restore post processing to its previous state
-                                    SetPostProcessing(usePP);
-
-                                    // Restore camera position and rotation to its pre-character view state
-                                    camera.gameObject.transform.position = defaultCameraPos;
-                                    camera.gameObject.transform.eulerAngles = defaultCameraRot;
-
-                                    SystemMessage.DisplayInfoText("Regular View Restored...");
-                                }
-                                if (diagnostic) { UnityEngine.Debug.Log("Camera is at " + camera.transform.position.x + "," + camera.transform.position.y + "," + camera.transform.position.z + " facing " + camera.transform.eulerAngles.y); }
+                                ToggleView(LocalClient.SelectedCreatureId);
                             }
                         }
                     }
                 }
             }
+        }
+
+        public void ToggleView(CreatureGuid target)
+        {
+            // Get reference to the camera
+            Camera camera = CameraController.GetCamera();
+
+            // If Character View mode is not active then activate it
+            if (!characterView)
+            {
+                // Switch the mode indicator (Character View mode)
+                characterView = true;
+
+                // Get post processing status
+                usePP = GetPostProcessing();
+                // Turn off post processing
+                SetPostProcessing(usePostProcessing.Value);
+                // Save camera position and rotation before character view
+                defaultCameraPos = camera.transform.position;
+                defaultCameraRot = camera.gameObject.transform.eulerAngles;
+
+                if (diagnostic) { UnityEngine.Debug.Log("Saving Camera: " + defaultCameraPos.x + "," + defaultCameraPos.y + "," + defaultCameraPos.z + " facing " + defaultCameraRot.y); }
+
+                // Find the selected character
+                CreatureBoardAsset asset;
+                CreaturePresenter.TryGetAsset(target,out asset);
+                if (asset != null)
+                {
+                    // Process creature's view
+                    SystemMessage.DisplayInfoText("Viewing As " + asset.Creature.Name + "...");
+
+                    // Get the selected character's current position and rotation
+
+                    Vector3 pos = // asset.CorrectPos;                          // <- Doesn't update on move (Load position?)
+                                  // asset.PlacedPosition;                      // <- Updated when mini is not held
+                                  // asset.LastDropPosition;                    // <- Updated when mini is not held
+                                  // asset.Creature.LastPlacedPosition;         // <- Updated when mini is not held
+                                     asset.gameObject.transform.position;       // or asset.Creature.gameObject.transform.position;
+
+                    Vector3 rot = asset.Rotator.eulerAngles;
+
+                    if (diagnostic) { UnityEngine.Debug.Log(asset.Creature.Name + " is at " + pos.x + "," + pos.y + "," + pos.z + " facing " + rot.y); }
+
+                    // Locate spot just in front of mini to avoid seeing through mini
+                    Quaternion rotation = Quaternion.AngleAxis((rot.y - 90), Vector3.up);
+                    Vector3 magnitude = new Vector3(0, 0, cameraForwardOffset);
+                    Vector3 dir = rotation * magnitude;
+
+                    if (diagnostic) { UnityEngine.Debug.Log("Camera offset is " + dir.x + "," + dir.y + "," + dir.z); }
+
+                    // Apply the mini offset to the mini position to determine the camera position
+                    pos.x += dir.x;
+                    pos.y += cameraHeightOffset;
+                    pos.x += dir.y;
+
+                    // Apply camera position and rotation
+                    camera.gameObject.transform.position = pos;
+                    camera.gameObject.transform.eulerAngles = new Vector3(0, (rot.y - 90), 0);
+                }
+            }
+            else
+            {
+                // Switch the mode indicator (Regular View mode)
+                characterView = false;
+
+                if (diagnostic) { UnityEngine.Debug.Log("Restoring Camera: " + defaultCameraPos.x + "," + defaultCameraPos.y + "," + defaultCameraPos.z + " facing " + defaultCameraRot.y); }
+
+                // Restore post processing to its previous state
+                SetPostProcessing(usePP);
+
+                // Restore camera position and rotation to its pre-character view state
+                camera.gameObject.transform.position = defaultCameraPos;
+                camera.gameObject.transform.eulerAngles = defaultCameraRot;
+
+                SystemMessage.DisplayInfoText("Regular View Restored...");
+            }
+            if (diagnostic) { UnityEngine.Debug.Log("Camera is at " + camera.transform.position.x + "," + camera.transform.position.y + "," + camera.transform.position.z + " facing " + camera.transform.eulerAngles.y); }
         }
 
         /// <summary>
