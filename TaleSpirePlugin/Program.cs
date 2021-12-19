@@ -4,19 +4,21 @@ using BepInEx;
 using Bounce.Unmanaged;
 using System.Linq;
 using BepInEx.Configuration;
+using System.Collections.Generic;
+using System;
 
 namespace LordAshes
 {
     [BepInPlugin(Guid, "Character View Plug-In", Version)]
     [BepInDependency(RadialUI.RadialUIPlugin.Guid)]
-    public class CharacterViewPlugin : BaseUnityPlugin
+    public partial class CharacterViewPlugin : BaseUnityPlugin
     {
         // Plugin info
         private const string Guid = "org.lordashes.plugins.characterview";
-        private const string Version = "1.2.0.0";
+        private const string Version = "1.4.1.0";
 
-        // Content directory
-        private string dir = UnityEngine.Application.dataPath.Substring(0, UnityEngine.Application.dataPath.LastIndexOf("/")) + "/TaleSpire_CustomData/";
+        // Plugin Directory
+        private string data = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().CodeBase.ToString().Replace("file:///", ""));
 
         // Stores if the current view is in Character View mode or Regular View mode
         private bool characterView = false;
@@ -43,11 +45,12 @@ namespace LordAshes
         // Higher values are a more realistic depiction of what the character sees but will not show content near the floor that is immeidately infront of the mini.
         private const float cameraHeightOffset = 0.5f;
 
-        // Creature whose radial menu is open
-        private CreatureGuid radialCreature = CreatureGuid.Empty;
-
         // Configuration
         private ConfigEntry<bool> usePostProcessing { get; set; }
+        private ConfigEntry<float> tiltDefault { get; set; }
+        private ConfigEntry<bool> resetHead { get; set; }
+        private static float tilt { get; set; }
+        private static float swivel { get; set; }
         
         /// <summary>
         /// Function for initializing plugin
@@ -58,20 +61,24 @@ namespace LordAshes
             UnityEngine.Debug.Log("CharacterViewPlugin: Select character and press ? to toggle between Character View and Regular View modes.");
 
             // Post plugin on TaleSpire main page
-            StateDetection.Initialize(this.GetType());
+            Utility.PostOnMainPage(this.GetType());
 
             // Load configuration
-            usePostProcessing = Config.Bind("Settings", "Use Post Processing When In CharacterView", true);
+            usePostProcessing = Config.Bind("Settings", "Use Post Processing When In CharacterView", false);
+            tiltDefault = Config.Bind("Settings", "Tilt Angle", 10f);
+            tilt = tiltDefault.Value;
+            swivel = 0;
+            resetHead = Config.Bind("Settings", "Reset Head Angle Between Views", true);
 
             // Add Character View to mini Radial menu
             Texture2D tex = new Texture2D(32, 32);
-            tex.LoadImage(System.IO.File.ReadAllBytes(dir + "Images/Icons/CharacterView.Png"));
+            tex.LoadImage(System.IO.File.ReadAllBytes(data + "/CustomData/Images/Icons/CharacterView.png"));
             Sprite icon = Sprite.Create(tex, new Rect(0, 0, 32, 32), new Vector2(0.5f, 0.5f));
-            RadialUI.RadialUIPlugin.AddOnCharacter(CharacterViewPlugin.Guid, new MapMenu.ItemArgs
+            RadialUI.RadialUIPlugin.AddCustomButtonOnCharacter(CharacterViewPlugin.Guid, new MapMenu.ItemArgs
             {
                 Action = (mmi, obj) =>
                 {
-                    ToggleView(radialCreature); 
+                    ToggleView(new CreatureGuid(RadialUI.RadialUIPlugin.GetLastRadialTargetCreature())); 
                 },
                 Icon = icon,
                 Title = "Character View",
@@ -88,8 +95,7 @@ namespace LordAshes
         /// <returns></returns>
         private bool Reporter(NGuid selected, NGuid radialMenu)
         {
-            radialCreature = new CreatureGuid(radialMenu);
-            return true;
+            return LocalClient.HasControlOfCreature(new CreatureGuid(radialMenu));
         }
 
         /// <summary>
@@ -98,9 +104,45 @@ namespace LordAshes
         /// </summary>
         void Update()
         {
-            // Character View fucntionality is triggered by the ? or / key
-            if (Input.GetKeyDown(KeyCode.Question) || Input.GetKeyDown(KeyCode.Slash) || (Input.anyKeyDown && characterView))
+            if (Input.GetKeyDown(KeyCode.U) && characterView)
             {
+                Debug.Log("Character View: Tilt +");
+                tilt = tilt + 5;
+                if (tilt > 175) { tilt = 175; }
+                ToggleView(LocalClient.SelectedCreatureId, true);
+            }
+            else if (Input.GetKeyDown(KeyCode.J) && characterView)
+            {
+                Debug.Log("Character View: Tilt -");
+                tilt = tilt - 5;
+                if (tilt < -175) { tilt = -175; }
+                ToggleView(LocalClient.SelectedCreatureId, true);
+            }
+            else if (Input.GetKeyDown(KeyCode.H) && characterView)
+            {
+                Debug.Log("Character View: Swivel -");
+                swivel = swivel -5;
+                if (swivel < -45) { swivel = -45; }
+                ToggleView(LocalClient.SelectedCreatureId, true);
+            }
+            else if (Input.GetKeyDown(KeyCode.K) && characterView)
+            {
+                Debug.Log("Character View: Swivel +");
+                swivel = swivel + 5;
+                if (swivel > 45) { swivel = 45; }
+                ToggleView(LocalClient.SelectedCreatureId, true);
+            }
+            else if (Input.GetKeyDown(KeyCode.N) && characterView)
+            {
+                Debug.Log("Character View: Recenter");
+                tilt = tiltDefault.Value;
+                swivel = 0;
+                ToggleView(LocalClient.SelectedCreatureId, true);
+            }
+            // Character View fucntionality is triggered by the ? or / key
+            else if (Input.GetKeyDown(KeyCode.Question) || Input.GetKeyDown(KeyCode.Slash) || (Input.anyKeyDown && characterView))
+            {
+                Debug.Log("Character View: View Toggle");
                 // Ensure that there is a camera controller instance
                 if (CameraController.HasInstance)
                 {
@@ -119,28 +161,48 @@ namespace LordAshes
                     }
                 }
             }
+
         }
 
-        public void ToggleView(CreatureGuid target)
+        void OnGUI()
         {
+            if(characterView)
+            {
+                GUIStyle gs = new GUIStyle()
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    fontSize = 16
+                };
+                gs.normal.textColor = Color.white;
+                GUI.Label(new Rect(0,60,1920,30),"Head: Tilt "+tilt+", Swivel "+swivel, gs);
+            }
+        }
+
+        public void ToggleView(CreatureGuid target, bool update = false)
+        {
+            Debug.Log("Character View: Toggle / Update");
             // Get reference to the camera
             Camera camera = CameraController.GetCamera();
 
             // If Character View mode is not active then activate it
-            if (!characterView)
+            Debug.Log("Character View: Character View = "+characterView+" / Update = "+update);
+            if (!characterView || update)
             {
                 // Switch the mode indicator (Character View mode)
                 characterView = true;
 
-                // Get post processing status
-                usePP = GetPostProcessing();
-                // Turn off post processing
-                SetPostProcessing(usePostProcessing.Value);
-                // Save camera position and rotation before character view
-                defaultCameraPos = camera.transform.position;
-                defaultCameraRot = camera.gameObject.transform.eulerAngles;
+                if (!update)
+                {
+                    // Get post processing status
+                    usePP = GetPostProcessing();
+                    // Turn off post processing
+                    SetPostProcessing(usePostProcessing.Value);
+                    // Save camera position and rotation before character view
+                    defaultCameraPos = camera.transform.position;
+                    defaultCameraRot = camera.gameObject.transform.eulerAngles;
 
-                if (diagnostic) { UnityEngine.Debug.Log("Saving Camera: " + defaultCameraPos.x + "," + defaultCameraPos.y + "," + defaultCameraPos.z + " facing " + defaultCameraRot.y); }
+                    if (diagnostic) { UnityEngine.Debug.Log("Saving Camera: " + defaultCameraPos.x + "," + defaultCameraPos.y + "," + defaultCameraPos.z + " facing " + defaultCameraRot.y); }
+                }
 
                 // Find the selected character
                 CreatureBoardAsset asset;
@@ -148,22 +210,17 @@ namespace LordAshes
                 if (asset != null)
                 {
                     // Process creature's view
-                    SystemMessage.DisplayInfoText("Viewing As " + asset.Creature.Name + "...");
+                    if (!update) { SystemMessage.DisplayInfoText("Viewing As " + asset.Creature.Name + "..."); }
 
                     // Get the selected character's current position and rotation
 
-                    Vector3 pos = // asset.CorrectPos;                          // <- Doesn't update on move (Load position?)
-                                  // asset.PlacedPosition;                      // <- Updated when mini is not held
-                                  // asset.LastDropPosition;                    // <- Updated when mini is not held
-                                  // asset.Creature.LastPlacedPosition;         // <- Updated when mini is not held
-                                     asset.gameObject.transform.position;       // or asset.Creature.gameObject.transform.position;
-
+                    Vector3 pos = asset.HookHead.position;
                     Vector3 rot = asset.Rotator.eulerAngles;
 
-                    if (diagnostic) { UnityEngine.Debug.Log(asset.Creature.Name + " is at " + pos.x + "," + pos.y + "," + pos.z + " facing " + rot.y); }
+                    if (diagnostic) { UnityEngine.Debug.Log(asset.Creature.Name + " is at " + pos.x + "," + pos.y + "," + pos.z + " facing " + rot.y+" / Head Tilt "+tilt+" Swivel "+swivel); }
 
                     // Locate spot just in front of mini to avoid seeing through mini
-                    Quaternion rotation = Quaternion.AngleAxis((rot.y - 90), Vector3.up);
+                    Quaternion rotation = Quaternion.AngleAxis((rot.y - 90) + swivel, Vector3.up);
                     Vector3 magnitude = new Vector3(0, 0, cameraForwardOffset);
                     Vector3 dir = rotation * magnitude;
 
@@ -171,12 +228,12 @@ namespace LordAshes
 
                     // Apply the mini offset to the mini position to determine the camera position
                     pos.x += dir.x;
-                    pos.y += cameraHeightOffset;
-                    pos.x += dir.y;
+                    pos.y = asset.HookHead.position.y;
+                    pos.z += dir.y;
 
                     // Apply camera position and rotation
                     camera.gameObject.transform.position = pos;
-                    camera.gameObject.transform.eulerAngles = new Vector3(0, (rot.y - 90), 0);
+                    camera.gameObject.transform.eulerAngles = new Vector3(tilt, (rot.y - 90) + swivel, 0);
                 }
             }
             else
@@ -194,8 +251,11 @@ namespace LordAshes
                 camera.gameObject.transform.eulerAngles = defaultCameraRot;
 
                 SystemMessage.DisplayInfoText("Regular View Restored...");
+
+                if (resetHead.Value) { tilt = tiltDefault.Value; swivel = 0; }
             }
             if (diagnostic) { UnityEngine.Debug.Log("Camera is at " + camera.transform.position.x + "," + camera.transform.position.y + "," + camera.transform.position.z + " facing " + camera.transform.eulerAngles.y); }
+
         }
 
         /// <summary>
