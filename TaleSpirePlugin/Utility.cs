@@ -2,6 +2,7 @@
 using BepInEx.Configuration;
 using System;
 using System.Linq;
+using System.Reflection;
 using TMPro;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -36,7 +37,7 @@ namespace LordAshes
                                 {
                                     modListText.text += "\n\nMods Currently Installed:\n";
                                 }
-                                modListText.text += "\nLord Ashes' " + bepInPlugin.Name + " - " + bepInPlugin.Version +" (via Hollo's Extra Asset Library)";
+                                modListText.text += "\nLord Ashes' " + bepInPlugin.Name + " - " + bepInPlugin.Version;
                             }
                         }
                     }
@@ -63,40 +64,13 @@ namespace LordAshes
             /// <returns></returns>
             public static bool StrictKeyCheck(KeyboardShortcut check)
             {
-                if (!check.IsUp())
-                {
-                    Debug.Log("Failed Ckeck For " + check.MainKey);
-                    return false; 
-                }
+                if (!check.IsUp()) { return false; }
                 foreach (KeyCode modifier in new KeyCode[] { KeyCode.LeftAlt, KeyCode.RightAlt, KeyCode.LeftControl, KeyCode.RightControl, KeyCode.LeftShift, KeyCode.RightShift })
                 {
-                    if (Input.GetKey(modifier) != check.Modifiers.Contains(modifier))
-                    {
-                        Debug.Log("Failed Ckeck For " + modifier);
-                        return false; 
-                    }
+                    if (Input.GetKey(modifier) != check.Modifiers.Contains(modifier)) { return false; }
                 }
                 return true;
             }
-
-            /// <summary>
-            /// Method to get creature name in case plugin is being used with Stat Messaging
-            /// </summary>
-            /// <param name="asset"></param>
-            /// <returns></returns>
-            public static string GetCreatureName(CreatureBoardAsset asset)
-            {
-                string name = asset.Creature.Name;
-                if (name.ToUpper().IndexOf("<SIZE=0") > 0) { name = name.Substring(0, name.ToUpper().IndexOf("<SIZE=0")); }
-                return name;
-            }
-
-            public static Vector3 GetV3(string commaDelimited)
-            {
-                string[] axis = commaDelimited.Split(',');
-                return new Vector3(float.Parse(axis[0]), float.Parse(axis[1]), float.Parse(axis[2]));
-            }
-
 
             private static TextMeshProUGUI GetUITextByName(string name)
             {
@@ -109,6 +83,87 @@ namespace LordAshes
                     }
                 }
                 return null;
+            }
+
+            /// <summary>
+            /// Method to obtain the Base Loader Game Object based on a CreatureGuid
+            /// </summary>
+            /// <param name="cid">Creature Guid</param>
+            /// <returns>BaseLoader Game Object</returns>
+            public static GameObject GetBaseLoader(CreatureGuid cid)
+            {
+                CreatureBoardAsset asset = null;
+                CreaturePresenter.TryGetAsset(cid, out asset);
+                if (asset != null)
+                {
+                    CreatureBase _base = null;
+                    StartWith<CreatureBase>(asset, "_base", ref _base);
+                    Transform baseLoader = null;
+                    Traverse(_base.transform, "BaseLoader", ref baseLoader);
+                    if (baseLoader != null)
+                    {
+                        return baseLoader.GetChild(0).gameObject;
+                    }
+                    else
+                    {
+                        Debug.LogWarning("Character View Plugin: Could Not Find Base Loader");
+                        return null;
+                    }
+                }
+                return null;
+            }
+
+            /// <summary>
+            /// Method to obtain the Asset Loader Game Object based on a CreatureGuid
+            /// </summary>
+            /// <param name="cid">Creature Guid</param>
+            /// <returns>AssetLoader Game Object</returns>
+            public static GameObject GetAssetLoader(CreatureGuid cid)
+            {
+                CreatureBoardAsset asset = null;
+                CreaturePresenter.TryGetAsset(cid, out asset);
+                if (asset != null)
+                {
+                    Transform _creatureRoot = null;
+                    StartWith(asset, "_creatureRoot", ref _creatureRoot);
+                    Transform assetLoader = null;
+                    Traverse(_creatureRoot, "AssetLoader", ref assetLoader);
+                    if (assetLoader != null)
+                    {
+                        return assetLoader.GetChild(0).gameObject;
+                    }
+                    else
+                    {
+                        Debug.LogWarning("Character View Plugin: Could Not Find Asset Loader");
+                        return null;
+                    }
+                }
+                return null;
+            }
+
+            public static void StartWith<T>(CreatureBoardAsset asset, string seek, ref T match)
+            {
+                Type type = typeof(CreatureBoardAsset);
+                match = default(T);
+                foreach (FieldInfo fi in type.GetRuntimeFields())
+                {
+                    if (fi.Name == seek) 
+                    {
+                        match = (T)fi.GetValue(asset); 
+                        break; 
+                    }
+                }
+            }
+
+            public static void Traverse(Transform root, string seek, ref Transform match)
+            {
+                // Debug.Log("Seeking Child Named '" + seek + "'. Found '" + root.name + "'");
+                if (match != null) { return; }
+                if (root.name == seek) { match = root; return; }
+                foreach (Transform child in root.Children())
+                {
+                    Traverse(child, seek, ref match);
+                }
             }
         }
     }
